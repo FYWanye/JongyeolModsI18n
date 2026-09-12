@@ -350,7 +350,7 @@ fn run() -> Result<()> {
         "info" => cmd_info(&state, &args, &root),
         "status" => cmd_status(&args, &root),
         "fetch" => cmd_fetch(&state, &args, &root),
-        "export" => cmd_export(&args, &root),
+        "export" => cmd_export(&args, &root, state.proxy.as_deref()),
         "import" => cmd_import(&args, &root),
         "edit" => cmd_edit(&state, &args, &root, true),
         "review" => cmd_edit(&state, &args, &root, false),
@@ -448,8 +448,8 @@ fn interactive_menu(state: &mut State, args: &Args, root: &Path) -> Result<()> {
                 Some(mod_id) => cmd_edit(state, &args.for_mod(&mod_id), root, true),
                 None => Ok(()),
             },
-            "4" => export_with_picker(args, root, true),
-            "5" => export_with_picker(args, root, false),
+            "4" => export_with_picker(state, args, root, true),
+            "5" => export_with_picker(state, args, root, false),
             "6" => import_from_clipboard(args, root),
             "7" => cmd_push(state, args, root, false),
             "8" => cmd_push(state, args, root, true),
@@ -506,13 +506,18 @@ fn pick_mod(args: &Args, root: &Path) -> Result<Option<String>> {
 }
 
 /// 菜单里的导出：先选模组，再按"仅待翻译/全部"导出。
-fn export_with_picker(args: &Args, root: &Path, only: bool) -> Result<()> {
+fn export_with_picker(
+    state: &State,
+    args: &Args,
+    root: &Path,
+    only: bool,
+) -> Result<()> {
     let Some(mod_id) = pick_mod(args, root)? else {
         return Ok(());
     };
     let mut sub = args.for_mod(&mod_id);
     sub.only = only;
-    cmd_export(&sub, root)
+    cmd_export(&sub, root, state.proxy.as_deref())
 }
 
 /// 菜单里的导入：提示粘贴方式，然后从 stdin 读到 EOF。
@@ -687,7 +692,10 @@ fn cmd_fetch(state: &State, args: &Args, root: &Path) -> Result<()> {
 }
 
 /// 导出配置：既可直接给 AI 翻译，也可当备份。
-fn cmd_export(args: &Args, root: &Path) -> Result<()> {
+///
+/// `proxy` 由调用方从已加载的配置里取（命令行 --proxy 会覆盖配置），
+/// 不能直接用 args.proxy —— 那只是命令行参数。
+fn cmd_export(args: &Args, root: &Path, proxy: Option<&str>) -> Result<()> {
     let mods = target_mods(&args.rest)?;
     let mut written: Vec<PathBuf> = Vec::new();
     let mut printed_any = false;
@@ -698,7 +706,44 @@ fn cmd_export(args: &Args, root: &Path) -> Result<()> {
             println!("跳过 {mod_id}：本地没有数据（先执行 fetch）");
             continue;
         }
-        let base = base_table(args, root, mod_id);
+        let mut base = base_table(args, root, mod_id);
+
+        // 原文兜底表是上次 fetch 的快照，可能缺少新条目。
+        // 这里按需从云端补一次，保证 AI 拿到的 text 不为空。
+        let missing: Vec<String> = table
+            .keys()
+            .filter(|key| base.get(*key).map(|v| v.trim().is_empty()).unwrap_or(true))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            if let Some(def) = config::find_mod(mod_id) {
+                if matches!(def.source, config::Source::Sheet { .. }) {
+                    match sheet::fetch(mod_id, proxy) {
+                        Ok(sheet) => {
+                            let mut filled = 0;
+                            for row in &sheet.rows {
+                                let reference = sheet.reference(row);
+                                if reference.trim().is_empty() {
+                                    continue;
+                                }
+                                let need = missing.iter().any(|key| key == &row.key);
+                                if need && base.get(&row.key).map(|v| v.trim().is_empty()).unwrap_or(true)
+                                {
+                                    base.insert(row.key.clone(), reference);
+                                    filled += 1;
+                                }
+                            }
+                            if filled > 0 {
+                                println!("（{mod_id}：已从云端补全 {filled} 条原文）");
+                            }
+                        }
+                        Err(err) => {
+                            println!("（{mod_id}：补全原文失败，部分条目 text 可能为空：{err}）");
+                        }
+                    }
+                }
+            }
+        }
 
         // 选出要导出的条目
         let mut items = Vec::new();
