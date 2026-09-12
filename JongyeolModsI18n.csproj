@@ -1,0 +1,86 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net481</TargetFramework>
+        <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+        <AutomaticallyUseFrameworkAssemblies>false</AutomaticallyUseFrameworkAssemblies>
+        <NoStdLib>true</NoStdLib>
+        <AddAdditionalExplicitAssemblyReferences>false</AddAdditionalExplicitAssemblyReferences>
+
+        <LangVersion>14</LangVersion>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+        <DebugSymbols>true</DebugSymbols>
+        <DebugType>portable</DebugType>
+
+        <Version>1.0.0.0</Version>
+        <AssemblyVersion>$(Version)</AssemblyVersion>
+        <FileVersion>$(Version)</FileVersion>
+
+        <AssemblyName>JongyeolModsI18n</AssemblyName>
+        <RootNamespace>JongyeolModsI18n</RootNamespace>
+
+        <Description>Simplified Chinese localization pack for Jongyeol's ADOFAI mods.</Description>
+        <Company>Jongyeol Mods I18n</Company>
+        <Copyright>Copyright ©Jongyeol Mods I18n 2026</Copyright>
+    </PropertyGroup>
+
+    <Target Name="GetReferenceAssemblyPaths"/>
+
+    <PropertyGroup>
+        <FrameworkPathOverride>$(GameManagedPath)</FrameworkPathOverride>
+        <TargetFrameworkDirectory>$(GameManagedPath)</TargetFrameworkDirectory>
+        <!-- 游戏 Mods 目录（用于引用 JALib.dll）。可在 Directory.Build.props.user 覆盖 -->
+        <ModsPath Condition="'$(ModsPath)' == ''">$(GameManagedPath)/../../Mods</ModsPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="0Harmony">
+            <HintPath>$(GameManagedPath)/UnityModManager/0Harmony.dll</HintPath>
+        </Reference>
+        <Reference Include="JALib">
+            <HintPath>$(ModsPath)/JALib/JALib.dll</HintPath>
+        </Reference>
+        <Reference Include="mscorlib">
+            <HintPath>$(GameManagedPath)/mscorlib.dll</HintPath>
+        </Reference>
+        <Reference Include="netstandard">
+            <HintPath>$(GameManagedPath)/netstandard.dll</HintPath>
+        </Reference>
+        <Reference Include="Newtonsoft.Json">
+            <HintPath>$(GameManagedPath)/Newtonsoft.Json.dll</HintPath>
+        </Reference>
+        <Reference Include="System">
+            <HintPath>$(GameManagedPath)/System.dll</HintPath>
+        </Reference>
+        <Reference Include="System.Core">
+            <HintPath>$(GameManagedPath)/System.Core.dll</HintPath>
+        </Reference>
+        <Reference Include="System.IO.Compression">
+            <HintPath>$(GameManagedPath)/System.IO.Compression.dll</HintPath>
+        </Reference>
+        <Reference Include="System.Runtime.CompilerServices.Unsafe">
+            <HintPath>$(GameManagedPath)/System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+        </Reference>
+        <Reference Include="System.Xml"/>
+        <Reference Include="UnityEngine">
+            <HintPath>$(GameManagedPath)/UnityEngine.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(GameManagedPath)/UnityEngine.CoreModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.IMGUIModule">
+            <HintPath>$(GameManagedPath)/UnityEngine.IMGUIModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityModManager">
+            <HintPath>$(GameManagedPath)/UnityModManager/UnityModManager.dll</HintPath>
+        </Reference>
+    </ItemGroup>
+
+    <!-- 内置的中文表：<模组Id>.ChineseSimplified.json，作为嵌入资源打进 DLL。
+         运行时按 <模组目录>/<模组Id>.ChineseSimplified.json 取用；不存在时才回退到嵌入资源。 -->
+    <ItemGroup>
+        <EmbeddedResource Include="Resources/*.ChineseSimplified.json">
+            <LogicalName>%(Filename)%(Extension)</LogicalName>
+        </EmbeddedResource>
+    </ItemGroup>
+</Project>

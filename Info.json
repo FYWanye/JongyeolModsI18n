@@ -1,0 +1,10 @@
+{
+  "Id": "JongyeolModsI18n",
+  "DisplayName": "Jongyeol's Mods I18n",
+  "Author": "Jongyeol Mods I18n",
+  "Version": "1.0.0.0",
+  "AssemblyName": "JAMod.Bootstrap.dll",
+  "EntryMethod": "JAMod.Bootstrap.Bootstrap.Setup",
+  "LoadAfter": ["JALib"],
+  "HomePage": "https://github.com/Jongye0l/JALib"
+}

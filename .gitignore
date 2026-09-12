@@ -1,0 +1,21 @@
+# 编译产物
+bin/
+obj/
+out/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.DotSettings.user
+*.sln.DotSettings
+
+# 本机编译配置（含游戏路径等机器相关信息）
+Directory.Build.props.user
+
+# NuGet
+packages/
+
+# 系统
+Thumbs.db
+desktop.ini
