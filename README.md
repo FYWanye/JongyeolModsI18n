@@ -11,7 +11,6 @@
 | JipperResourcePack | 169 | [JipperResourcePack](https://github.com/Jongye0l/JipperResourcePack) |
 | BetterCalibration | 27 | [BetterCalibration](https://github.com/Jongye0l/BetterCalibration) |
 
-> 只汉化本地化表。**AdofaiTweaks / XPerfect 自带中文，未纳入**。
 > 未安装的模组会被自动跳过，不会报错。
 
 ## 安装
