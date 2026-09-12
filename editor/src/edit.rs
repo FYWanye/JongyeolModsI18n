@@ -1,5 +1,6 @@
 //! 交互式汉化会话：逐条显示原文与当前译文，直接输入即可保存。
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 use crate::config;
@@ -9,7 +10,8 @@ pub struct Session<'a> {
     pub references: Vec<(String, String)>,
     pub keys: Vec<String>,
     pub index: usize,
-    pub changed: usize,
+    /// 被改过的键 → 改动前的值（None 表示原本不存在）。用于精确统计"真正变化的条目数"。
+    touched: HashMap<String, Option<String>>,
 }
 
 impl<'a> Session<'a> {
@@ -20,8 +22,27 @@ impl<'a> Session<'a> {
             references,
             keys,
             index: 0,
-            changed: 0,
+            touched: HashMap::new(),
         }
+    }
+
+    /// 真正发生内容变化的条目数（不是"输入了几次"）。
+    pub fn changed_count(&self) -> usize {
+        self.touched
+            .iter()
+            .filter(|(key, before)| match before {
+                Some(old) => self.table.get(*key) != Some(old),
+                None => self.table.get(*key).is_some(),
+            })
+            .count()
+    }
+
+    /// 写入并记录改动前的值（只在第一次修改某个键时记录）。
+    fn set(&mut self, key: &str, value: String) {
+        self.touched
+            .entry(key.to_string())
+            .or_insert_with(|| self.table.get(key).cloned());
+        self.table.insert(key.to_string(), value);
     }
 
     fn reference_of(&self, key: &str) -> String {
@@ -70,9 +91,9 @@ impl<'a> Session<'a> {
             if stdin.lock().read_line(&mut line)? == 0 {
                 break; // EOF（例如管道输入结束）
             }
-            let input = line.trim_end_matches(['\r', '\n']);
+            let input = normalize_input(&line);
 
-            match input {
+            match input.as_str() {
                 "" => self.index += 1,
                 ":q" => break,
                 ":n" => self.index = (self.index + 1).min(self.keys.len().saturating_sub(1)),
@@ -81,20 +102,33 @@ impl<'a> Session<'a> {
                     if reference.is_empty() {
                         println!("（原文为空，忽略）");
                     } else {
-                        self.table.insert(key, reference);
-                        self.changed += 1;
+                        self.set(&key, reference);
                         self.index += 1;
                     }
                 }
                 other => {
-                    self.table.insert(key, other.to_string());
-                    self.changed += 1;
-                    self.index += 1;
+                    // 与当前值相同就不算改动（避免"输入同一个值"被计成修改）
+                    if other == current {
+                        self.index += 1;
+                    } else {
+                        self.set(&key, other.to_string());
+                        self.index += 1;
+                    }
                 }
             }
         }
         Ok(())
     }
+}
+
+/// 清洗一行输入：
+///   - 去掉行尾的 CR/LF；
+///   - **去掉 UTF-8 BOM**（PowerShell 管道、以及从别处复制粘贴都可能带上，
+///     否则会把它当成译文写进 JSON）。
+pub(crate) fn normalize_input(line: &str) -> String {
+    line.trim_end_matches(['\r', '\n'])
+        .trim_start_matches('\u{feff}')
+        .to_string()
 }
 
 /// 把多行原文压成一行，便于在终端里阅读。
@@ -117,6 +151,14 @@ mod tests {
     }
 
     #[test]
+    fn strips_bom_and_newlines_from_input() {
+        assert_eq!(normalize_input("\u{feff}连击\r\n"), "连击");
+        assert_eq!(normalize_input("连击\n"), "连击");
+        assert_eq!(normalize_input("\u{feff}\n"), "");
+        assert_eq!(normalize_input("\n"), "");
+    }
+
+    #[test]
     fn finds_first_untranslated() {
         let mut table = config::Table::new();
         table.insert("A".into(), "已翻译".into());
@@ -125,5 +167,29 @@ mod tests {
         let mut session = Session::new(&mut table, vec![]);
         session.seek_first_untranslated();
         assert_eq!(session.keys[session.index], "B");
+    }
+
+    #[test]
+    fn counts_only_real_changes() {
+        let mut table = config::Table::new();
+        table.insert("A".into(), "旧值".into());
+        table.insert("B".into(), "".into());
+        let mut session = Session::new(&mut table, vec![]);
+
+        // 写入相同值 → 不算改动
+        session.set("A", "旧值".into());
+        assert_eq!(session.changed_count(), 0);
+
+        // 写入新值 → 算 1 条
+        session.set("A", "新值".into());
+        assert_eq!(session.changed_count(), 1);
+
+        // 改回原值 → 又变回 0 条
+        session.set("A", "旧值".into());
+        assert_eq!(session.changed_count(), 0);
+
+        // 原本为空 → 填写 → 算 1 条
+        session.set("B", "填上了".into());
+        assert_eq!(session.changed_count(), 1);
     }
 }

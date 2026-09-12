@@ -164,28 +164,51 @@ pub fn github_token(state: &State) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
-/// 定位仓库根目录（包含 csproj 的那一层）。
+/// 定位仓库根目录。
+///
+/// 依次尝试三个来源：
+///   1. 环境变量 `I18N_EDITOR_REPO`；
+///   2. 当前目录往上找（在终端里 cd 到仓库内再运行）；
+///   3. **可执行文件所在目录往上找** —— 双击运行时 cwd 常常是 exe 所在目录
+///      （例如 `target\release\`），只靠 cwd 找不到仓库根。
 pub fn workspace_root() -> Result<PathBuf> {
-    let start = std::env::current_dir().context("无法获取当前目录")?;
-    let mut dir = start.clone();
+    if let Ok(explicit) = std::env::var("I18N_EDITOR_REPO") {
+        let path = PathBuf::from(explicit);
+        if path.is_dir() {
+            return Ok(path);
+        }
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        if let Some(root) = find_root_upwards(&dir) {
+            return Ok(root);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if let Some(root) = find_root_upwards(dir) {
+                return Ok(root);
+            }
+        }
+    }
+    anyhow::bail!(
+        "找不到仓库根目录。请在仓库目录里运行，或设置环境变量 I18N_EDITOR_REPO 指向仓库根。"
+    )
+}
+
+/// 从给定目录逐级向上找仓库根：含 `JongyeolModsI18n.csproj`，或含 `Cargo.toml` + `data\`。
+fn find_root_upwards(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
         if dir.join("JongyeolModsI18n.csproj").is_file() {
-            return Ok(dir);
+            return Some(dir);
         }
-        if !dir.pop() {
-            break;
-        }
-    }
-    let mut dir = start;
-    loop {
         if dir.join("Cargo.toml").is_file() && dir.join(DATA_DIR).is_dir() {
-            return Ok(dir);
+            return Some(dir);
         }
         if !dir.pop() {
-            break;
+            return None;
         }
     }
-    anyhow::bail!("找不到仓库根目录（请在仓库内运行，或用 --data 指定数据目录）")
 }
 
 #[cfg(unix)]

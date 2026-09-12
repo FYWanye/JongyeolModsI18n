@@ -96,6 +96,15 @@
 cargo build --release          # 产物在 target/release/i18n-editor
 ```
 
+> **不想敲命令？直接双击运行即可。**
+> 双击 `i18n-editor.exe`（仓库根目录还放了一份 `汉化编辑器.exe`）会进入**交互式菜单**：
+> 显示各模组进度，按数字选择「拉取云端原文 / 逐条汉化 / 查看进度 / 上传 GitHub / 从 GitHub 覆盖」。
+> 菜单模式下窗口**不会一闪而过**，退出前会等你按回车；被脚本重定向时不会暂停，仍可脚本化。
+>
+> 说明：编辑器会自动从**可执行文件所在目录**向上找仓库根（含 `JongyeolModsI18n.csproj`
+> 或 `Cargo.toml`+`data\`），所以双击时工作目录不对也没关系；必要时可用
+> 环境变量 `I18N_EDITOR_REPO` 指定仓库根。
+
 | 命令 | 作用 |
 |---|---|
 | `i18n-editor init --repo <owner/name> --proxy <url>` | 初始化配置（写在用户配置目录，不入仓库） |

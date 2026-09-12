@@ -20,6 +20,7 @@ const HELP: &str = r#"Jongyeol's Mods I18n 汉化列表编辑器
 
 用法：
   i18n-editor [全局选项] <命令> [参数]
+  i18n-editor                 不带参数运行会进入交互式菜单（双击 exe 即可）
 
 命令：
   init                          初始化配置（写入 GitHub 仓库/代理等信息）
@@ -49,7 +50,7 @@ const HELP: &str = r#"Jongyeol's Mods I18n 汉化列表编辑器
   i18n-editor push
 "#;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Args {
     repo: Option<String>,
     branch: Option<String>,
@@ -186,21 +187,74 @@ fn save_table(args: &Args, root: &std::path::Path, mod_id: &str, table: &Table) 
 }
 
 fn main() -> ExitCode {
-    match run() {
+    prepare_console();
+    let bare = std::env::args().len() <= 1;
+    let code = match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("\n错误：{err:#}");
             ExitCode::FAILURE
         }
+    };
+    // 双击运行（无参数）时控制台会随进程退出而关闭，等一次按键避免"一闪而过"
+    if bare && is_console_attached() {
+        pause();
     }
+    code
+}
+
+/// Windows 控制台默认代码页可能不是 UTF-8，中文会显示成乱码。
+fn prepare_console() {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "chcp", "65001"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        // SAFETY: 这两个 API 只设置当前控制台代码页，无副作用
+        unsafe {
+            SetConsoleOutputCP(65001);
+            SetConsoleCP(65001);
+        }
+    }
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn SetConsoleOutputCP(code_page: u32) -> i32;
+    fn SetConsoleCP(code_page: u32) -> i32;
+    fn GetConsoleWindow() -> isize;
+}
+
+/// 是否挂在控制台上（双击 .exe 为 true；输出被重定向时为 false）。
+fn is_console_attached() -> bool {
+    #[cfg(windows)]
+    {
+        unsafe { GetConsoleWindow() != 0 }
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+fn pause() {
+    println!("\n按回车键关闭窗口…");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
 }
 
 fn run() -> Result<()> {
     let args = parse_args()?;
     let mut state = State::load();
     apply_overrides(&mut state, &args);
-    let command = args.command.clone().unwrap_or_else(|| "help".into());
     let root = root(&args)?;
+
+    // 没有给命令（例如双击 exe）→ 进入交互式菜单
+    let Some(command) = args.command.clone() else {
+        return interactive_menu(&mut state, &args, &root);
+    };
 
     match command.as_str() {
         "help" => {
@@ -219,6 +273,131 @@ fn run() -> Result<()> {
         "pull" => cmd_push(&state, &args, &root, true),
         "data" => cmd_data(&args, &root),
         other => anyhow::bail!("未知命令：{other}（用 --help 查看用法）"),
+    }
+}
+
+// --------------------------------------------------------------------- 交互式菜单
+
+/// 无参数运行（双击 exe）时进入的菜单：重复显示选项，直到用户选择退出。
+fn interactive_menu(state: &mut State, args: &Args, root: &std::path::Path) -> Result<()> {
+    loop {
+        println!("\n============================================================");
+        println!("  Jongyeol's Mods I18n —— 汉化列表编辑器");
+        println!("============================================================");
+        println!("  仓库     : {}", state.repo());
+        println!("  分支     : {}", state.branch());
+        println!(
+            "  代理     : {}",
+            state.proxy.as_deref().unwrap_or("（未设置，联网失败时用 --proxy 指定）")
+        );
+        println!(
+            "  令牌     : {}",
+            if config::github_token(state).is_some() { "已配置" } else { "未配置（上传需要）" }
+        );
+        println!("  仓库根   : {}", root.display());
+        println!("  数据目录 : {}", data_dir(args, root).display());
+        println!("------------------------------------------------------------");
+        for def in config::MODS {
+            let table = load_table(args, root, def.id).unwrap_or_default();
+            let done = table.values().filter(|value| !value.trim().is_empty()).count();
+            let origin = match def.source {
+                config::Source::Sheet { .. } => "云端可拉取",
+                config::Source::LocalOnly => "仅本地",
+            };
+            println!(
+                "  {:<20} {:>4}/{:<4} 已翻译   {}",
+                def.id,
+                done,
+                table.len(),
+                origin
+            );
+        }
+        println!("------------------------------------------------------------");
+        println!("   1) 拉取云端原文（生成/更新待翻译条目）");
+        println!("   2) 逐条汉化");
+        println!("   3) 查看进度");
+        println!("   4) 上传到 GitHub");
+        println!("   5) 从 GitHub 覆盖本地");
+        println!("   6) 查看配置与连通性");
+        println!("   0) 退出");
+        print!("\n请选择：");
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            return Ok(()); // 输入结束（管道）
+        }
+        let choice = line.trim();
+
+        // 2) 逐条汉化需要先选模组；把它放在 match 之前处理
+        if choice == "2" {
+            match pick_mod(args, root)? {
+                Some(mod_id) => {
+                    let mut sub = args.clone();
+                    sub.rest = vec![mod_id];
+                    let _ = cmd_edit(state, &sub, root, true);
+                }
+                None => println!("（已取消）"),
+            }
+        } else {
+            let result = match choice {
+                "" | "0" | "q" | "Q" => return Ok(()),
+                "1" => cmd_fetch(state, args, root),
+                "3" => cmd_status(args, root),
+                "4" => cmd_push(state, args, root, false),
+                "5" => cmd_push(state, args, root, true),
+                "6" => cmd_info(state, args, root),
+                other => {
+                    println!("未知选项：{other}");
+                    continue;
+                }
+            };
+            // 菜单里出错不该把整个程序带走，只提示一下继续
+            if let Err(err) = result {
+                eprintln!("\n操作失败：{err:#}");
+            }
+        }
+    }
+}
+
+/// 让用户从模组列表里挑一个（用于菜单里的"逐条汉化"）。
+fn pick_mod(args: &Args, root: &std::path::Path) -> Result<Option<String>> {
+    let mods: Vec<&str> = config::MODS.iter().map(|def| def.id).collect();
+    println!("\n选择要汉化的模组：");
+    for (index, def) in config::MODS.iter().enumerate() {
+        let table = load_table(args, root, def.id).unwrap_or_default();
+        let done = table.values().filter(|value| !value.trim().is_empty()).count();
+        let missing = table.len() - done;
+        println!(
+            "  {}) {:<20} 待翻译 {} 条（共 {} 条）",
+            index + 1,
+            def.id,
+            missing,
+            table.len()
+        );
+    }
+    print!("输入序号（回车取消）：");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<usize>() {
+        Ok(number) if number >= 1 && number <= mods.len() => Ok(Some(mods[number - 1].to_string())),
+        _ => {
+            // 也允许直接输模组名
+            if mods.contains(&trimmed) {
+                Ok(Some(trimmed.to_string()))
+            } else {
+                println!("无效的序号：{trimmed}");
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -405,7 +584,7 @@ fn cmd_edit(state: &State, args: &Args, root: &std::path::Path, interactive: boo
         let mut session = edit::Session::new(&mut table, references);
         session.seek_first_untranslated();
         session.run()?;
-        changed = session.changed;
+        changed = session.changed_count();
     } else {
         // review：只读浏览，不修改
         for (index, (key, value)) in table.iter().enumerate() {
@@ -423,8 +602,18 @@ fn cmd_edit(state: &State, args: &Args, root: &std::path::Path, interactive: boo
         changed = 0;
     }
 
-    let path = save_table(args, root, &mod_id, &table)?;
+    // 没有任何实际改动就不要重写文件（避免无意义的文件时间戳变化）
     let done = table.values().filter(|v| !v.trim().is_empty()).count();
+    if changed == 0 {
+        println!(
+            "\n本次没有修改（进度 {}/{}），未改动 {}",
+            done,
+            table.len(),
+            table_path(args, root, &mod_id).display()
+        );
+        return Ok(());
+    }
+    let path = save_table(args, root, &mod_id, &table)?;
     println!(
         "\n已保存 {}（本次修改 {} 条，进度 {}/{}）",
         path.display(),
@@ -445,7 +634,10 @@ fn cmd_save(args: &Args, root: &std::path::Path) -> Result<()> {
         .get(1)
         .cloned()
         .context("用法：i18n-editor save <模组> <键> [译文]")?;
-    let value = args.rest.get(2).cloned();
+    let value = args.rest.get(2).cloned().map(|raw| {
+        // 与交互式输入同样做消毒：命令行/脚本传入的值也可能带 BOM
+        edit::normalize_input(&raw)
+    });
 
     let mut table = load_table(args, root, &mod_id)?;
     match value {

@@ -4,6 +4,10 @@ obj/
 out/
 target/
 
+# 编辑器可执行文件（从 target/release 复制到根目录方便双击，不入库）
+汉化编辑器.exe
+i18n-editor.exe
+
 # Rust
 **/*.rs.bk
 
