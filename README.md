@@ -112,20 +112,33 @@ cargo build --release          # 产物在 target/release/i18n-editor
 | `i18n-editor info` | 显示配置、数据文件位置，并探测 GitHub 可达性 |
 | `i18n-editor status` | 各模组汉化进度 |
 | `i18n-editor fetch [模组...] [--base]` | 从作者云端表格拉取原文；加 `--base` 同时导出原文兜底表 |
-| `i18n-editor edit <模组>` | **逐条手动汉化**（回车跳过、`=` 用原文、`:p/:n` 翻页、`:q` 退出并保存） |
+| **`i18n-editor export [模组...] [--only] [--stdout] [--out <文件>]`** | **导出配置/待翻译内容，便于整段贴给 AI** |
+| **`i18n-editor import [模组] [--file <路径>]`** | **导入译文（从 stdin 粘贴 AI 回复，或读文件）** |
+| `i18n-editor edit <模组>` | 逐条手动汉化（回车跳过、`=` 用原文、`:p/:n` 翻页、`:q` 退出并保存） |
 | `i18n-editor save <模组> <键> [译文]` | 非交互改单条（不给译文则打印当前值） |
 | `i18n-editor push [模组...]` | 把本地汉化表**与原文兜底表**一起提交到 GitHub |
 | `i18n-editor pull [模组...]` | 从 GitHub 覆盖本地汉化表与原文兜底表 |
 | `i18n-editor data [模组]` | 打印汉化表 JSON |
 
-典型流程：
+### 推荐流程：交给 AI 翻译
 
 ```bash
-i18n-editor init --repo FYWanye/JongyeolModsI18n --proxy http://127.0.0.1:7897
-i18n-editor fetch            # 拉云端原文
-i18n-editor edit JALib       # 手动翻译
-i18n-editor push             # 上传 → 游戏下次启动即生效
+i18n-editor fetch                # 1) 拉取云端原文（新增条目会变成待翻译）
+i18n-editor export --only        # 2) 导出待翻译内容 → out\<模组>-待翻译.json
+#    3) 打开该文件，把整份内容贴给任意 AI（文件里已内置翻译说明与术语表）
+#    4) 把 AI 的回复整段复制
+i18n-editor import               # 5) 粘贴（Ctrl+Z 再回车结束），自动导入
+i18n-editor push                 # 6) 上传 → 游戏下次启动即生效
 ```
+
+- `export --stdout` 可直接把内容打到终端方便复制；`--out <文件>` 指定输出位置。
+- `export`（不带 `--only`）会导出**全部**条目，适合"让 AI 重新翻一遍"。
+- `import` **容错很强**，能自动跳过 Markdown 代码围栏与前后说明文字，并识别：
+  1. 本工具导出的 JSON（`{"items":[...]}`）
+  2. `{"translations":{...}}` 或纯平铺 `{"键":"译文"}`
+  3. `<key>…</key><zh>…</zh>` 标签块
+  4. TSV / `键=译文`
+  还会把 AI 转义掉的 `\n` 还原成真换行，并**忽略本地表里不存在的键**（不会误加条目）。
 
 > 模组列表中 `BetterCalibration` 标记为**仅本地维护**：上游没有给它配置云端 Gid，
 > 因此无法 `fetch`，只能在本地编辑后 `push`。
