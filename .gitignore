@@ -2,6 +2,10 @@
 bin/
 obj/
 out/
+target/
+
+# Rust
+**/*.rs.bk
 
 # IDE
 .vs/
@@ -15,6 +19,10 @@ Directory.Build.props.user
 
 # NuGet
 packages/
+
+# 本机私有文件（绝不提交）
+*.local
+i18n-editor.local.json
 
 # 系统
 Thumbs.db

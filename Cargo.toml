@@ -1,0 +1,18 @@
+[workspace]
+members = ["editor"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "BSD-3-Clause"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+# minreq 依赖面很小：HTTPS 用 rustls，不引入 url/idna/icu 那一串。
+# 必须显式开启 proxy 特性，否则 with_proxy 不可用。
+minreq = { version = "2", features = ["https-rustls", "json-using-serde", "proxy"] }
+base64 = "0.22"

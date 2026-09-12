@@ -1,0 +1,18 @@
+﻿[package]
+name = "i18n-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Jongyeol's Mods I18n 汉化列表编辑器：拉取云端表格、手动汉化、保存本地、上传 GitHub"
+
+[[bin]]
+name = "i18n-editor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+minreq.workspace = true
+base64.workspace = true

@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
 using System.Reflection;
+using System.Threading.Tasks;
 using HarmonyLib;
 using JALib.Core;
 using JALib.Core.Setting;
@@ -38,6 +41,20 @@ public class Main : JAMod {
         ("BetterCalibration", nameof(ModSettings.EnableBetterCalibration)),
         ("JipperResourcePack", nameof(ModSettings.EnableJipperResourcePack))
     ];
+
+    /// <summary>汉化表的远端地址前缀。改动这里即可换成别的托管位置。</summary>
+    private const string RemoteBase =
+        "https://raw.githubusercontent.com/FYWanye/JongyeolModsI18n/main/data/";
+
+    /// <summary>远端拉取的超时（毫秒）。失败只影响"更新译文"，不影响游戏。</summary>
+    private const int RemoteTimeoutMs = 8000;
+
+    /// <summary>后台线程下载完成的译文（模组Id → JSON），等主线程取用。</summary>
+    private static readonly ConcurrentDictionary<string, string> RemoteResults = new();
+    /// <summary>远端拉取的失败提示（模组Id → 文案），用于界面显示。</summary>
+    private static readonly ConcurrentDictionary<string, string> RemoteErrors = new();
+    /// <summary>已经处理过远端结果的模组，避免重复落盘。</summary>
+    private static readonly ConcurrentDictionary<string, bool> RemoteApplied = new();
 
     private Harmony _harmony;
     private readonly Dictionary<string, string> _injected = new();
@@ -94,6 +111,13 @@ public class Main : JAMod {
             LogException("创建 localization 目录失败", e);
         }
         ReloadAll();
+        // 后台拉取最新汉化表：不阻塞主线程，失败也只记一条提示。
+        StartRemoteFetch();
+    }
+
+    /// <summary>每帧在主线程上处理后台下载结果。</summary>
+    protected override void OnUpdate(float deltaTime) {
+        ApplyRemoteResults();
     }
 
     protected override void OnUnload() {
@@ -279,6 +303,11 @@ public class Main : JAMod {
                 json = System.IO.File.ReadAllText(userPath);
                 return true;
             }
+            // 后台已从 GitHub 下好、且尚未落盘时，先用内存里这份
+            if(RemoteResults.TryGetValue(modId, out string remote) && !string.IsNullOrEmpty(remote)) {
+                json = remote;
+                return true;
+            }
             using System.IO.Stream stream = typeof(Main).Assembly.GetManifestResourceStream(key);
             if(stream == null) return false;
             using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8);
@@ -288,6 +317,70 @@ public class Main : JAMod {
             LogException("读取 " + modId + " 的中文表失败", e);
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------ 远端翻译
+
+    /// <summary>在后台线程拉取各模组的最新汉化表；失败只记录提示，不影响任何功能。</summary>
+    private void StartRemoteFetch() {
+        foreach((string id, _) in TranslatableMods) {
+            if(JAMod.GetMods(id) == null) continue;
+            string modId = id;
+            Task.Run(() => FetchOne(modId));
+        }
+    }
+
+    /// <summary>后台线程：只做网络下载，绝不碰 Unity / 文件系统写入。</summary>
+    private static void FetchOne(string modId) {
+        try {
+            string url = RemoteBase + modId + ".ChineseSimplified.json";
+            using WebClient client = new();
+            client.Encoding = System.Text.Encoding.UTF8;
+            client.Headers[HttpRequestHeader.UserAgent] = "JongyeolModsI18n";
+            client.Headers[HttpRequestHeader.CacheControl] = "no-cache";
+            string json = client.DownloadStringTaskAsync(url).GetAwaiter().GetResult();
+            if(string.IsNullOrWhiteSpace(json)) {
+                RemoteErrors[modId] = "下载失败";
+                return;
+            }
+            RemoteResults[modId] = json;
+            RemoteErrors.TryRemove(modId, out _);
+        } catch (Exception e) {
+            // 静默失败：只留一条给界面看的提示，日志里保留细节
+            RemoteErrors[modId] = "下载失败";
+            Main.Instance?.Log("拉取 " + modId + " 汉化表失败：" + e.Message);
+        }
+    }
+
+    /// <summary>主线程：把下载结果落盘并让对应模组立即生效。</summary>
+    private void ApplyRemoteResults() {
+        foreach((string id, _) in TranslatableMods) {
+            if(!RemoteResults.TryGetValue(id, out string json)) continue;
+            if(RemoteApplied.ContainsKey(id)) continue;
+            JAMod mod = JAMod.GetMods(id);
+            if(mod == null) continue;
+            RemoteApplied[id] = true;
+            try {
+                if(RemoteErrors.ContainsKey(id)) continue;
+                // 1) 落盘：下次启动即使联网失败也能用最新译文
+                string path = System.IO.Path.Combine(mod.Path, "localization", "ChineseSimplified.json");
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+                if(!System.IO.File.Exists(path) || System.IO.File.ReadAllText(path) != json)
+                    System.IO.File.WriteAllText(path, json);
+                // 2) 当前会话立即生效（若已注入过中文，重新加载一次即可）
+                if(_injected.ContainsKey(id)) ReloadIfLoaded(id);
+                Log("已从 GitHub 更新 " + id + " 的汉化表");
+            } catch (Exception e) {
+                Log("应用 " + id + " 的远端汉化表失败：" + e.Message);
+            }
+        }
+    }
+
+    /// <summary>该模组的译文来源，用于界面显示。</summary>
+    internal string TranslationSource(string modId) {
+        if(RemoteApplied.ContainsKey(modId) && !RemoteErrors.ContainsKey(modId)) return "已从 GitHub 更新";
+        if(RemoteErrors.TryGetValue(modId, out string reason)) return "使用内置译文（" + reason + "）";
+        return "使用内置译文";
     }
 
     /// <summary>把中文表落盘到目标模组目录，保证"读该文件的代码"也拿到中文。</summary>
@@ -331,15 +424,16 @@ public class Main : JAMod {
 
         GUILayout.Space(6);
         GUILayout.Label("<b>当前状态</b>");
-        if(!Enabled) GUILayout.Label("<color=grey>  汉化已关闭</color>");
-        else foreach((string id, _) in TranslatableMods) {
+        if(!Enabled) {
+            GUILayout.Label("<color=grey>  汉化已关闭</color>");
+        } else foreach((string id, _) in TranslatableMods) {
             if(JAMod.GetMods(id) == null) continue;
-            GUILayout.Label("  " + id + "：" + InjectionState(id));
+            GUILayout.Label("  " + id + "：" + InjectionState(id) + "（" + TranslationSource(id) + "）");
         }
 
         GUILayout.Space(6);
-        GUILayout.Label("<color=grey>译文优先级：localization\\&lt;模组Id&gt;.ChineseSimplified.json"
-                        + " → DLL 内嵌译文。改完重启游戏生效。</color>");
+        GUILayout.Label("<color=grey>译文优先级：GitHub 最新 → 本地缓存 → DLL 内嵌译文；"
+                        + "联网失败会退回后两者，只影响译文新旧，不影响游戏。</color>");
     }
 }
 

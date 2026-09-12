@@ -41,10 +41,13 @@
 ## 工作原理
 
 ```
-游戏启动
+启动
+ ├─ OnEnable 起一个后台线程，从 GitHub 拉最新汉化表（不阻塞主线程）
+ │    ├─ 成功 → 主线程落盘到 <模组>\localization\ChineseSimplified.json，并热更新当前会话
+ │    └─ 失败 → 只记一条“下载失败”，继续用缓存/内嵌译文
  └─ JALib 构造各模组的 JALocalization（此时本模组的 Harmony Prefix 已挂好）
      └─ Prefix 判断：该模组在汉化名单里 && 总开关与模组开关都开 && 生效语言 == 简体中文
-         ├─ 读取内置的 <模组Id>.ChineseSimplified.json
+         ├─ 读取译文（优先级：本地缓存文件 → 刚下载的 → DLL 内嵌）
          ├─ 落盘到 Mods\<模组>\localization\ChineseSimplified.json
          ├─ 反射写进该模组的本地化字段
          └─ 返回 false —— 跳过原 Load()
@@ -55,35 +58,82 @@
 云端数据会把中文盖回英文/韩文。跳过它就等于同时关掉了这条覆盖路径——
 这就是"更新后中文不丢"的根本原因。
 
+### 网络失败绝不影响游戏
+
+- 下载在**后台线程**进行，主线程只做落盘与热更新，游戏启动不会被网络卡住；
+- 超时 8 秒，失败**静默降级**：译文回退到上次下载的缓存，再回退到 DLL 内嵌译文；
+- 设置页「当前状态」会显示 `使用内置译文（下载失败）`，不会弹窗、不会报错、不影响其它模组。
+
+## 汉化表怎么维护（i18n-editor）
+
+汉化表托管在本仓库 `data/` 目录，配套一个跨平台 Rust 命令行编辑器：
+
+```bash
+cargo build --release          # 产物在 target/release/i18n-editor
+```
+
+| 命令 | 作用 |
+|---|---|
+| `i18n-editor init --repo <owner/name> --proxy <url>` | 初始化配置（写在用户配置目录，不入仓库） |
+| `i18n-editor auth <token>` | 校验并保存 GitHub 令牌（也可用环境变量 `GITHUB_TOKEN`） |
+| `i18n-editor info` | 显示配置、数据文件位置，并探测 GitHub 可达性 |
+| `i18n-editor status` | 各模组汉化进度 |
+| `i18n-editor fetch [模组...]` | 从作者云端表格拉取原文（生成待翻译条目） |
+| `i18n-editor edit <模组>` | **逐条手动汉化**（回车跳过、`=` 用原文、`:p/:n` 翻页、`:q` 退出并保存） |
+| `i18n-editor save <模组> <键> [译文]` | 非交互改单条（不给译文则打印当前值） |
+| `i18n-editor push [模组...]` | 把本地汉化表提交到 GitHub（模组随即能读到） |
+| `i18n-editor pull [模组...]` | 从 GitHub 覆盖本地汉化表 |
+| `i18n-editor data [模组]` | 打印汉化表 JSON |
+
+典型流程：
+
+```bash
+i18n-editor init --repo FYWanye/JongyeolModsI18n --proxy http://127.0.0.1:7897
+i18n-editor fetch            # 拉云端原文
+i18n-editor edit JALib       # 手动翻译
+i18n-editor push             # 上传 → 游戏下次启动即生效
+```
+
+> 模组列表中 `BetterCalibration` 标记为**仅本地维护**：上游没有给它配置云端 Gid，
+> 因此无法 `fetch`，只能在本地编辑后 `push`。
+
 ## 改动译文 / 新增模组
 
 ### 改译文（无需重新编译）
 
-在本模组目录建 `localization\`，放入 `<模组Id>.ChineseSimplified.json`：
+用编辑器改完 `push` 即可，游戏下次启动自动拉取。
+也可以直接改本模组目录下的缓存文件（仅对本次安装生效）：
 
 ```
 Mods\JongyeolModsI18n\localization\JipperResourcePack.ChineseSimplified.json
 ```
 
-启动时**优先**读取该文件，找不到才回退 DLL 内嵌译文。
+读取优先级：**本地缓存文件 → 本次从 GitHub 下载的 → DLL 内嵌译文**。
 
 ### 改内嵌译文 / 加新模组
 
-1. 编辑或新增 `Resources\<模组Id>.ChineseSimplified.json`（模组 Id 即 `Mods\` 下的文件夹名）
-2. 若为**新模组**，在 `Main.TranslatableMods` 数组里加上它，并在设置类里加一个开关字段
-3. 重新构建
+`data\` 是汉化表的**权威副本**（编辑器维护）。`build.ps1` 会把它同步到 `Resources\`
+并打进 DLL 作为兜底，所以正常流程只需改 `data\`。
+
+1. 用编辑器改 `data\<模组Id>.ChineseSimplified.json`（`fetch` + `edit`，或直接编辑）
+2. 若为**新模组**：在 `editor\src\config.rs` 的 `MODS` 加一条，并在 `Main.TranslatableMods`
+   与设置类里加对应开关，然后重新构建
+3. `i18n-editor push` 上传汉化表，再 `build.ps1` 打新包
 
 ## 构建
 
 需要：Windows + dotnet SDK + 已安装 ADOFAI 与官方 JALib（编译期引用 `Mods\JALib\JALib.dll`）。
+编辑器另需 Rust 工具链（`cargo build --release`）。
 
 ```powershell
+cargo build --release -p i18n-editor        # 先构建编辑器（可选）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 # 可选参数：-Configuration Debug、-NoZip
 ```
 
 产物在 `out\`：`JongyeolModsI18n.zip` 与散件。
-脚本会自检内嵌资源与必需文件，并保证 zip 条目为正斜杠。
+脚本会先校验 `data\` 里的汉化表，同步进 `Resources\`，再自检内嵌资源与必需文件，
+并保证 zip 条目为正斜杠。
 
 > ⚠️ **不要去掉 `build.ps1` 的 UTF-8 BOM**：Windows PowerShell 5.1 对无 BOM 的 `.ps1`
 > 按 GBK 解码，会把中文注释破坏成语法错误。
@@ -159,16 +209,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\publish.ps1 -User <用户�
 
 ```
 JongyeolModsI18n\
-├─ Info.json                 UMM 清单（Id / 入口 / LoadAfter）
-├─ JAModInfo.json            JALib 清单（程序集 / 类名）
-├─ JAMod.Bootstrap.dll       引导 DLL（与作者的 JAMod.Bootstrap 一致）
-├─ JongyeolModsI18n.csproj   工程文件
-├─ Main.cs                   模组主体：Harmony Prefix + 设置面板
-├─ Resources\                内嵌中文表（<模组Id>.ChineseSimplified.json）
-├─ build.ps1                 构建脚本（编译 + 组装 + zip + 自检）
+├─ data\                     汉化表（权威副本，模组从这里/从 GitHub 读取）
+├─ Resources\                同上，构建时由 data\ 同步而来（作为 DLL 内嵌兜底）
+├─ Main.cs                   模组主体：Harmony Prefix + 后台拉取 + 设置面板
+├─ JongyeolModsI18n.csproj   模组工程文件
+├─ Info.json / JAModInfo.json / JAMod.Bootstrap.dll   UMM 与 JALib 清单
+├─ editor\                   跨平台汉化列表编辑器（Rust）
+│   ├─ Cargo.toml
+│   └─ src\{main,config,sheet,github,http,edit}.rs
+├─ Cargo.toml                Rust workspace（成员：editor）
+├─ build.ps1                 构建脚本（同步汉化表 + 编译 + 组装 zip + 自检）
 ├─ publish.ps1               发布脚本（推送 GitHub / 发 Release）
 ├─ Directory.Build.props     编译配置（GameManagedPath）
 ├─ .gitattributes / .gitignore
 ├─ LICENSE                   BSD 3-Clause
+├─ target\                   Rust 构建缓存（git 忽略）
 └─ out\                      构建产物（git 忽略）
 ```
