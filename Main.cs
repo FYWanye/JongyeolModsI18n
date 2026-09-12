@@ -60,7 +60,11 @@ public class Main : JAMod {
     private static readonly ConcurrentDictionary<string, Dictionary<string, string>> BaseCache = new();
 
     private Harmony _harmony;
+    /// <summary>补丁是否成功挂载（用于区分"补丁没挂上"与"挂上了但没被调用"）。</summary>
+    private static bool _patchMounted;
     private readonly Dictionary<string, string> _injected = new();
+    /// <summary>各模组是否已被本模组拦截过本地化加载（用于区分"补丁没挂上"和"注入失败"）。</summary>
+    private static readonly ConcurrentDictionary<string, string> _patched = new();
 
     /// <summary>用户可编辑的中文表目录（相对本模组目录）：放 <c>&lt;模组Id&gt;.ChineseSimplified.json</c> 即可覆盖内置译文。</summary>
     private string LocalizationDir => System.IO.Path.Combine(Path, "localization");
@@ -101,8 +105,10 @@ public class Main : JAMod {
             }
             _harmony = new Harmony("JongyeolModsI18n.Localization");
             _harmony.Patch(load, prefix: new HarmonyMethod(prefix));
+            _patchMounted = true;
             Log("已挂载中文本地化注入点（目标 " + TranslatableMods.Length + " 个模组）");
         } catch (Exception e) {
+            _patchMounted = false;
             LogException("挂载本地化注入补丁失败", e);
         }
     }
@@ -178,31 +184,67 @@ public class Main : JAMod {
         }
     }
 
-    /// <summary>直接把内置中文表写进某个模组的本地化字段（供无 Reload() 的旧版兜底）。</summary>
-    internal void TryInject(JAMod mod, JALocalization localization) {
-        if(localization == null) return;
-        if(!TryReadBuiltIn(mod.Name, out string json)) return;
+    /// <summary>
+    /// 把某个模组的中文表注入到它的本地化字段里；成功返回 true。
+    ///
+    /// 关键：**每次都重新注入**。官方 JALib 可能在更早的时机用本地 localization 文件
+    /// 填充过该字段，或者 _curLang 已经是中文，若此时跳过注入，前缀就只会"跳过原 Load"
+    /// 而什么都不写，界面仍然是英文。
+    /// </summary>
+    internal bool InjectInto(JALocalization localization, JAMod mod) {
+        if(localization == null || mod == null) return false;
+        if(!TryReadBuiltIn(mod.Name, out string json)) {
+            Warning("没有 " + mod.Name + " 的中文表（内嵌与本地缓存都缺失）");
+            return false;
+        }
         try {
-            if(!ApplyLocalization(localization, ParseTable(json))) {
-                Warning("无法把中文表写入 " + mod.Name + " 的本地化字段（已跳过）");
-                return;
-            }
+            // 先落盘再注入，保证磁盘与内存一致
             EnsureChineseFile(mod, json);
-            InvokeLocalizationUpdate(mod);
-            _injected[mod.Name] = "已注入";
+            // 按「保留原文」规则把命中的键换回英文，再注入
+            Dictionary<string, string> table = ApplyKeepOriginal(mod.Name, ParseTable(json), KeepTerms());
+            if(table.Count == 0) {
+                Warning(mod.Name + " 的中文表是空的");
+                return false;
+            }
+            if(!ApplyLocalization(localization, table)) {
+                Warning("无法把中文表写入 " + mod.Name + " 的本地化字段");
+                return false;
+            }
+            MarkPatched(mod.Name, true);
+            return true;
         } catch (Exception e) {
             LogException("注入 " + mod.Name + " 的中文表失败", e);
+            return false;
+        }
+    }
+
+    /// <summary>直接把内置中文表写进某个模组的本地化字段（供无 Reload() 的旧版兜底）。</summary>
+    internal void TryInject(JAMod mod, JALocalization localization) {
+        if(InjectInto(localization, mod)) {
+            InvokeLocalizationUpdate(mod);
+            _injected[mod.Name] = "已注入";
         }
     }
 
     /// <summary>记录一次成功注入（由补丁调用）。</summary>
-    internal void MarkInjected(string modId) => _injected[modId] = "已注入";
+    internal void MarkInjected(string modId) {
+        _injected[modId] = "已注入";
+        MarkPatched(modId, true);
+    }
 
-    /// <summary>该模组当前是否已注入中文（供界面显示）。</summary>
+    /// <summary>记录「该模组的本地化加载已被本模组拦截过」。</summary>
+    internal static void MarkPatched(string modId, bool ok) {
+        _patched[modId] = ok ? "已接管" : "接管失败";
+    }
+
+    /// <summary>该模组当前状态（供界面显示）。</summary>
     internal string InjectionState(string modId) {
         if(_injected.TryGetValue(modId, out string text)) return text;
         if(!IsModEnabled(modId)) return "已按设置关闭";
-        return "未注入（界面语言不是简体中文？）";
+        if(_patched.TryGetValue(modId, out string patched))
+            return patched == "已接管" ? "已接管但未注入（看日志）" : "接管失败（看日志）";
+        if(!_patchMounted) return "未接管（补丁没挂上，请把日志发给作者）";
+        return "未接管（该模组尚未加载本地化）";
     }
 
     /// <summary>触发模组的 OnLocalizationUpdate 回调（JAMod 上该入口是 internal，用反射调用）。</summary>
@@ -601,28 +643,19 @@ internal static class ModLocalizationPatch {
             if(!main.IsModEnabled(mod.Name)) return true; // 该模组被单独关闭
 
             // 默认不判断界面语言：装本模组的人就是要中文。
-            // 若用户关掉「始终使用中文」，则回退到原逻辑（按其语言设置决定）。
+            // 只有用户主动关掉「始终使用中文」时，才按其语言设置决定是否接管。
             bool alwaysChinese = main.ModSetting?.AlwaysChinese ?? true;
             if(!alwaysChinese) {
-                SystemLanguage? lang = (SystemLanguage?) LangField?.GetValue(__instance);
                 SystemLanguage? custom = (SystemLanguage?) CustomLanguageProperty?.GetValue(mod);
-                SystemLanguage language = custom ?? lang ?? GameLanguage();
+                SystemLanguage language = custom ?? (SystemLanguage?) LangField?.GetValue(__instance) ?? GameLanguage();
                 if(language != SystemLanguage.ChineseSimplified) return true;
-                if(lang == SystemLanguage.ChineseSimplified) return false;
             }
 
-            if(!main.TryReadBuiltIn(mod.Name, out string json)) return true;
+            // 把中文表写进该模组的本地化字段。
+            // 注意：不能因为 _curLang 已经是中文就跳过注入 ——
+            // 那样只会跳过原 Load，却什么都没写进去，界面依旧是英文。
+            if(!main.InjectInto(__instance, mod)) return true;
 
-            // 先落盘再注入，保证磁盘与内存一致
-            main.EnsureChineseFile(mod, json);
-            // 按「保留原文」规则把命中的键换回英文，再注入
-            Dictionary<string, string> table = Main.ApplyKeepOriginal(
-                mod.Name, Main.ParseTable(json), main.KeepTerms());
-            if(!Main.ApplyLocalization(__instance, table)) {
-                // 注入失败就交回原流程，宁可走官方云端逻辑也不要卡在空表上
-                main.Warning("注入 " + mod.Name + " 的中文表失败（已交回官方逻辑）");
-                return true;
-            }
             LangField?.SetValue(__instance, SystemLanguage.ChineseSimplified);
             main.InvokeLocalizationUpdate(mod);
             main.MarkInjected(mod.Name);
