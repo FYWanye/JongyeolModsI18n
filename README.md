@@ -30,12 +30,33 @@
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | 启用汉化 | 开 | 总开关。关闭后各模组恢复原始语言 |
+| **始终使用中文（不判断界面语言）** | **开** | 装本模组就是为了要中文，因此不再要求把游戏界面语言切成简体中文。关闭后仅在语言为简体中文时生效 |
 | 各模组汉化开关 | 平均开 | `JALib` / `BetterCalibration` / `JipperResourcePack` 各自独立；未安装的显示"未安装" |
-| 当前状态 | — | 逐模组显示「已注入 / 已按设置关闭 / 未注入（界面语言不是简体中文？）」 |
+| **保留原文的词** | 空 | 不想被翻译的词，逗号或空格分隔（不区分大小写、按条目名匹配、包含即命中） |
+| 当前状态 | — | 逐模组显示「已注入 / 已按设置关闭 / 未注入」与译文来源 |
 
 开关**实时保存**到 `Mods\JongyeolModsI18n\Settings.json`，并且**不需要重启游戏**——
 切换后会调用对应模组的 `JALocalization.Reload()` 重新加载本地化，
 开启即注入中文、关闭即恢复原始语言。
+
+### 「保留原文的词」怎么用
+
+有些术语是萝卜青菜：有人喜欢 `Combo` 译成「连击」，有人就喜欢看英文。填进这个框的词，
+凡是**条目名包含该词**的条目都会换回英文原文。例如填 `combo`：
+
+| 条目 | 默认 | 填 combo 后 |
+|---|---|---|
+| `Feature.Combo` | 连击 | Combo |
+| `combo.comboColor` | 连击颜色 | Combo Color |
+| `Enum.ComboTier.White` | 白判（完美+ / XPerfect） | White Judgement(XPerfect) |
+
+几个常用词：`combo`（连击）、`best`（最佳记录）、`attempt`（尝试次数）、`progress`（进度）、
+`keyviewer`（键显）。
+
+> 中文译文与英文原文**成对**存放在仓库 `data\` 下（`<模组Id>.ChineseSimplified.json` 与
+> `<模组Id>.BaseEnglish.json`）。**新条目**（作者表格里没有、由本项目补充的）没有对应的英文，
+> 即使命中也会保持中文——设置页会提示这类条目的数量。
+> `BetterCalibration` 上游没有云端表格，也就没有原文表，因此它不支持「保留原文」。
 
 ## 工作原理
 
@@ -45,12 +66,16 @@
  │    ├─ 成功 → 主线程落盘到 <模组>\localization\ChineseSimplified.json，并热更新当前会话
  │    └─ 失败 → 只记一条“下载失败”，继续用缓存/内嵌译文
  └─ JALib 构造各模组的 JALocalization（此时本模组的 Harmony Prefix 已挂好）
-     └─ Prefix 判断：该模组在汉化名单里 && 总开关与模组开关都开 && 生效语言 == 简体中文
+     └─ Prefix 判断：该模组在汉化名单里 && 总开关与模组开关都开
          ├─ 读取译文（优先级：本地缓存文件 → 刚下载的 → DLL 内嵌）
+         ├─ 按「保留原文的词」把命中条目换回 <模组Id>.BaseEnglish.json 里的英文
          ├─ 落盘到 Mods\<模组>\localization\ChineseSimplified.json
          ├─ 反射写进该模组的本地化字段
          └─ 返回 false —— 跳过原 Load()
 ```
+
+**不再判断界面语言**：装本模组的人就是要中文，所以默认（`始终使用中文` 开启）无条件注入。
+只有手动关掉该选项时，才回退到「仅当语言为简体中文时生效」。
 
 **为什么跳过原 Load 很关键**：原 `Load()` 会从作者的 Google 表格拉取数据并写回
 `localization\<语言>.json`。而表格目前**只有 Korean / English 两列**，
@@ -77,11 +102,11 @@ cargo build --release          # 产物在 target/release/i18n-editor
 | `i18n-editor auth <token>` | 校验并保存 GitHub 令牌（也可用环境变量 `GITHUB_TOKEN`） |
 | `i18n-editor info` | 显示配置、数据文件位置，并探测 GitHub 可达性 |
 | `i18n-editor status` | 各模组汉化进度 |
-| `i18n-editor fetch [模组...]` | 从作者云端表格拉取原文（生成待翻译条目） |
+| `i18n-editor fetch [模组...] [--base]` | 从作者云端表格拉取原文；加 `--base` 同时导出原文兜底表 |
 | `i18n-editor edit <模组>` | **逐条手动汉化**（回车跳过、`=` 用原文、`:p/:n` 翻页、`:q` 退出并保存） |
 | `i18n-editor save <模组> <键> [译文]` | 非交互改单条（不给译文则打印当前值） |
-| `i18n-editor push [模组...]` | 把本地汉化表提交到 GitHub（模组随即能读到） |
-| `i18n-editor pull [模组...]` | 从 GitHub 覆盖本地汉化表 |
+| `i18n-editor push [模组...]` | 把本地汉化表**与原文兜底表**一起提交到 GitHub |
+| `i18n-editor pull [模组...]` | 从 GitHub 覆盖本地汉化表与原文兜底表 |
 | `i18n-editor data [模组]` | 打印汉化表 JSON |
 
 典型流程：
@@ -208,16 +233,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\publish.ps1 -User <用户�
 
 ```
 JongyeolModsI18n\
-├─ data\                     汉化表（权威副本，模组从这里/从 GitHub 读取）
+├─ data\                     汉化数据（权威副本）
+│   ├─ <模组Id>.ChineseSimplified.json   中文译文
+│   └─ <模组Id>.BaseEnglish.json         英文原文（「保留原文」时换回用）
 ├─ Resources\                同上，构建时由 data\ 同步而来（作为 DLL 内嵌兜底）
-├─ Main.cs                   模组主体：Harmony Prefix + 后台拉取 + 设置面板
+├─ Main.cs                   模组主体：Harmony Prefix + 后台拉取 + 保留原文 + 设置面板
 ├─ JongyeolModsI18n.csproj   模组工程文件
 ├─ Info.json / JAModInfo.json / JAMod.Bootstrap.dll   UMM 与 JALib 清单
 ├─ editor\                   跨平台汉化列表编辑器（Rust）
 │   ├─ Cargo.toml
 │   └─ src\{main,config,sheet,github,http,edit}.rs
 ├─ Cargo.toml                Rust workspace（成员：editor）
-├─ build.ps1                 构建脚本（同步汉化表 + 编译 + 组装 zip + 自检）
+├─ build.ps1                 构建脚本（同步数据 + 编译 + 组装 zip + 自检）
 ├─ publish.ps1               发布脚本（推送 GitHub / 发 Release）
 ├─ Directory.Build.props     编译配置（GameManagedPath）
 ├─ .gitattributes / .gitignore

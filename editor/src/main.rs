@@ -39,6 +39,7 @@ const HELP: &str = r#"Jongyeol's Mods I18n 汉化列表编辑器
   --proxy <url>                 网络代理，如 http://127.0.0.1:7897
   --data <目录>                 数据目录（默认 <仓库根>/data）
   --token <token>               GitHub 令牌（优先用环境变量 GITHUB_TOKEN）
+  --base                        fetch 时同时导出 <模组Id>.BaseEnglish.json（原文兜底表）
   -h, --help                    显示本帮助
 
 示例：
@@ -55,6 +56,8 @@ struct Args {
     proxy: Option<String>,
     data: Option<PathBuf>,
     token: Option<String>,
+    /// fetch 时额外导出原文兜底表（<模组Id>.BaseEnglish.json）
+    base: bool,
     command: Option<String>,
     rest: Vec<String>,
 }
@@ -73,6 +76,7 @@ fn parse_args() -> Result<Args> {
             "--proxy" => args.proxy = iter.next(),
             "--data" => args.data = iter.next().map(PathBuf::from),
             "--token" => args.token = iter.next(),
+            "--base" => args.base = true,
             other if other.starts_with('-') => anyhow::bail!("未知选项：{other}（用 --help 查看用法）"),
             other => {
                 if args.command.is_none() {
@@ -341,6 +345,21 @@ fn cmd_fetch(state: &State, args: &Args, root: &std::path::Path) -> Result<()> {
             );
         }
         println!("  已保存 {}", path.display());
+
+        // 可选：导出原文兜底表。模组在「保持原文」时用它取回英文原词，
+        // 因为作者表格里没有中文列，云端回退不到英文。
+        if args.base {
+            let mut base = Table::new();
+            for (key, value) in &references {
+                base.insert(key.clone(), value.clone());
+            }
+            let base_path = data_dir(args, root).join(format!("{mod_id}.BaseEnglish.json"));
+            let mut text = serde_json::to_string_pretty(&base)?;
+            text.push('\n');
+            std::fs::write(&base_path, text)
+                .with_context(|| format!("写入失败：{}", base_path.display()))?;
+            println!("  原文兜底表已保存 {}", base_path.display());
+        }
     }
     println!("\n完成。下一步：i18n-editor edit <模组>");
     Ok(())
@@ -467,41 +486,62 @@ fn cmd_data(args: &Args, root: &std::path::Path) -> Result<()> {
 /// pull = true 时从 GitHub 覆盖本地；否则把本地推到 GitHub。
 fn cmd_push(state: &State, args: &Args, root: &std::path::Path, pull: bool) -> Result<()> {
     let mods = target_mods(&args.rest)?;
+    // 需要同步的文件种类：中文译文 + 原文兜底表（模组「保留原文」时用后者换回英文）
+    const KINDS: &[(&str, &str)] = &[
+        ("ChineseSimplified", "更新简体中文汉化表"),
+        ("BaseEnglish", "更新原文兜底表"),
+    ];
+
     if pull {
         for mod_id in mods {
-            let path = format!("{}/{mod_id}.ChineseSimplified.json", config::DATA_DIR);
-            match github::read_file(state, &path)? {
-                Some(file) => {
-                    let table: Table = serde_json::from_str(&file.text)
-                        .with_context(|| format!("远端 {path} 不是合法的汉化表"))?;
-                    let saved = save_table(args, root, &mod_id, &table)?;
-                    println!("已从 GitHub 拉取 {mod_id}（{} 条）→ {}", table.len(), saved.display());
+            for (kind, _) in KINDS {
+                let path = format!("{}/{mod_id}.{kind}.json", config::DATA_DIR);
+                match github::read_file(state, &path)? {
+                    Some(file) => {
+                        let table: Table = serde_json::from_str(&file.text)
+                            .with_context(|| format!("远端 {path} 不是合法的表"))?;
+                        let target = data_dir(args, root).join(format!("{mod_id}.{kind}.json"));
+                        std::fs::create_dir_all(data_dir(args, root))?;
+                        let mut text = serde_json::to_string_pretty(&table)?;
+                        text.push('\n');
+                        std::fs::write(&target, text)?;
+                        println!("已拉取 {path}（{} 条）→ {}", table.len(), target.display());
+                    }
+                    None => println!("远端还没有 {path}，跳过"),
                 }
-                None => println!("远端还没有 {path}，跳过"),
             }
         }
         return Ok(());
     }
 
     for mod_id in mods {
-        let table = load_table(args, root, &mod_id)?;
-        if table.is_empty() {
-            println!("跳过 {mod_id}：本地表为空（先执行 fetch）");
-            continue;
-        }
-        let mut text = serde_json::to_string_pretty(&table)?;
-        text.push('\n');
-        let path = format!("{}/{mod_id}.ChineseSimplified.json", config::DATA_DIR);
-
-        // 内容一致就不产生空提交
-        if let Some(remote) = github::read_file(state, &path)? {
-            if remote.text.trim() == text.trim() {
-                println!("{mod_id} 与 GitHub 一致，跳过");
+        for (kind, note) in KINDS {
+            let local = data_dir(args, root).join(format!("{mod_id}.{kind}.json"));
+            if !local.is_file() {
+                if *kind == "ChineseSimplified" {
+                    println!("跳过 {mod_id}：本地没有 {kind}（先执行 fetch）");
+                }
                 continue;
             }
+            let table: Table = serde_json::from_str(&std::fs::read_to_string(&local)?)
+                .with_context(|| format!("解析失败：{}", local.display()))?;
+            if table.is_empty() {
+                continue;
+            }
+            let mut text = serde_json::to_string_pretty(&table)?;
+            text.push('\n');
+            let path = format!("{}/{mod_id}.{kind}.json", config::DATA_DIR);
+
+            // 内容一致就不产生空提交
+            if let Some(remote) = github::read_file(state, &path)? {
+                if remote.text.trim() == text.trim() {
+                    println!("{mod_id}.{kind} 与 GitHub 一致，跳过");
+                    continue;
+                }
+            }
+            let message = format!("i18n({mod_id}): {note}");
+            github::write_file(state, &path, &text, &message)?;
         }
-        let message = format!("i18n({mod_id}): 更新简体中文汉化表");
-        github::write_file(state, &path, &text, &message)?;
     }
     println!("\n完成。模组下次启动即可从 GitHub 读取最新汉化。");
     Ok(())

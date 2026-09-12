@@ -76,10 +76,14 @@
         </Reference>
     </ItemGroup>
 
-    <!-- 内置的中文表：<模组Id>.ChineseSimplified.json，作为嵌入资源打进 DLL。
-         运行时按 <模组目录>/<模组Id>.ChineseSimplified.json 取用；不存在时才回退到嵌入资源。 -->
+    <!-- 内置数据，作为嵌入资源打进 DLL：
+         <模组Id>.ChineseSimplified.json —— 汉化译文（联网失败时的兜底）
+         <模组Id>.BaseEnglish.json       —— 原文兜底表（供「保留原文」取回英文） -->
     <ItemGroup>
         <EmbeddedResource Include="Resources/*.ChineseSimplified.json">
+            <LogicalName>%(Filename)%(Extension)</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include="Resources/*.BaseEnglish.json">
             <LogicalName>%(Filename)%(Extension)</LogicalName>
         </EmbeddedResource>
     </ItemGroup>

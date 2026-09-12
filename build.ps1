@@ -67,13 +67,15 @@ foreach ($f in @('Info.json', 'JAModInfo.json', 'JAMod.Bootstrap.dll')) {
 }
 
 # 汉化表：data\ 是仓库里的权威副本（由 i18n-editor 维护）。
-# 1) 同步进 Resources\ —— 供 csproj 作为嵌入资源打进 DLL（联网失败时的兜底）；
+# 1) 同步进 Resources\ —— 供 csproj 作为嵌入资源打进 DLL（联网失败时的兜底 / 保留原文时的英文来源）；
 # 2) 复制进 out\localization\ —— 随包发布，用户也能就地查看/修改。
 $dataDir = Join-Path $Workspace 'data'
 $resSrc = Join-Path $Workspace 'Resources'
 if (-not (Test-Path $dataDir)) { throw "找不到汉化表目录：$dataDir（请先运行 i18n-editor fetch）" }
 $tables = @(Get-ChildItem $dataDir -Filter '*.ChineseSimplified.json')
 if ($tables.Count -eq 0) { throw "汉化表目录为空：$dataDir" }
+# 原文兜底表（可能有，也可能没有；没有的模组无法「保留原文」）
+$bases = @(Get-ChildItem $dataDir -Filter '*.BaseEnglish.json')
 New-Item -ItemType Directory -Force -Path $resSrc | Out-Null
 $resDir = Join-Path $out 'localization'
 New-Item -ItemType Directory -Force -Path $resDir | Out-Null
@@ -81,6 +83,11 @@ foreach ($f in $tables) {
     Copy-Item $f.FullName (Join-Path $resSrc $f.Name) -Force
     Copy-Item $f.FullName $resDir -Force
     Write-Host ("  [汉化表] {0}" -f $f.Name)
+}
+foreach ($f in $bases) {
+    Copy-Item $f.FullName (Join-Path $resSrc $f.Name) -Force
+    Copy-Item $f.FullName $resDir -Force
+    Write-Host ("  [原文表] {0}" -f $f.Name)
 }
 
 # --- 自检 -------------------------------------------------------------------

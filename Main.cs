@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -55,6 +56,8 @@ public class Main : JAMod {
     private static readonly ConcurrentDictionary<string, string> RemoteErrors = new();
     /// <summary>已经处理过远端结果的模组，避免重复落盘。</summary>
     private static readonly ConcurrentDictionary<string, bool> RemoteApplied = new();
+    /// <summary>原文兜底表缓存（模组Id → 键到英文原文）。</summary>
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> BaseCache = new();
 
     private Harmony _harmony;
     private readonly Dictionary<string, string> _injected = new();
@@ -376,6 +379,21 @@ public class Main : JAMod {
         }
     }
 
+    /// <summary>统计某个模组里命中「保留原文」的条目数，以及其中没有原文可用的条数。</summary>
+    internal bool KeepOriginalCount(string modId, string[] terms, out int hit, out int noBase) {
+        hit = 0;
+        noBase = 0;
+        if(!TryReadBuiltIn(modId, out string json)) return false;
+        Dictionary<string, string> table = ParseTable(json);
+        Dictionary<string, string> baseTable = BaseTable(modId);
+        foreach(string key in table.Keys) {
+            if(!ShouldKeepOriginal(key, terms)) continue;
+            hit++;
+            if(!baseTable.TryGetValue(key, out string original) || string.IsNullOrEmpty(original)) noBase++;
+        }
+        return true;
+    }
+
     /// <summary>该模组的译文来源，用于界面显示。</summary>
     internal string TranslationSource(string modId) {
         if(RemoteApplied.ContainsKey(modId) && !RemoteErrors.ContainsKey(modId)) return "已从 GitHub 更新";
@@ -397,6 +415,74 @@ public class Main : JAMod {
         }
     }
 
+    // ------------------------------------------------------------------ 保留原文
+
+    /// <summary>把设置里的词列表拆成小写数组（支持中英文逗号、分号、空格、换行分隔）。</summary>
+    internal string[] KeepTerms() {
+        string raw = ModSetting?.KeepOriginal;
+        if(string.IsNullOrWhiteSpace(raw)) return [];
+        return raw
+            .Split([',', '，', ';', '；', '\n', '\r', ' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(term => term.Trim().ToLowerInvariant())
+            .Where(term => term.Length > 0)
+            .Distinct()
+            .ToArray();
+    }
+
+    /// <summary>该键是否命中「保留原文」规则（键名包含所列词即命中）。</summary>
+    internal static bool ShouldKeepOriginal(string key, string[] terms) {
+        if(terms.Length == 0) return false;
+        string lower = key.ToLowerInvariant();
+        foreach(string term in terms) {
+            if(lower.Contains(term)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 取某个模组的原文兜底表（<c>&lt;模组Id&gt;.BaseEnglish.json</c>）。
+    ///
+    /// 作者表格里没有中文列，云端回退拿不到英文，所以需要自带一份原文，
+    /// 供「保留原文」时把中文换回英文。用户可在本模组 localization 目录放同名文件覆盖。
+    /// </summary>
+    internal static Dictionary<string, string> BaseTable(string modId) {
+        if(BaseCache.TryGetValue(modId, out Dictionary<string, string> cached)) return cached;
+        Dictionary<string, string> table = [];
+        string key = modId.Replace('.', '_') + ".BaseEnglish.json";
+        try {
+            string userPath = System.IO.Path.Combine(Main.Instance?.LocalizationDir ?? "", key);
+            if(!string.IsNullOrEmpty(Main.Instance?.LocalizationDir) && System.IO.File.Exists(userPath)) {
+                table = JsonConvert.DeserializeObject<Dictionary<string, string>>(System.IO.File.ReadAllText(userPath)) ?? [];
+            } else {
+                using System.IO.Stream stream = typeof(Main).Assembly.GetManifestResourceStream(key);
+                if(stream != null) {
+                    using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8);
+                    table = JsonConvert.DeserializeObject<Dictionary<string, string>>(reader.ReadToEnd()) ?? [];
+                }
+            }
+        } catch (Exception e) {
+            Main.Instance?.Log("读取 " + modId + " 的原文兜底表失败：" + e.Message);
+        }
+        BaseCache[modId] = table;
+        return table;
+    }
+
+    /// <summary>
+    /// 按「保留原文」规则生成最终要注入的表：命中的键换回英文原文。
+    /// 没有原文的键（表格里不存在，属本模组新增）保持中文。
+    /// </summary>
+    internal static Dictionary<string, string> ApplyKeepOriginal(string modId, Dictionary<string, string> table, string[] terms) {
+        if(terms.Length == 0) return table;
+        Dictionary<string, string> baseTable = BaseTable(modId);
+        if(baseTable.Count == 0) return table;
+        foreach(string key in table.Keys.ToList()) {
+            if(!ShouldKeepOriginal(key, terms)) continue;
+            if(baseTable.TryGetValue(key, out string original) && !string.IsNullOrEmpty(original))
+                table[key] = original;
+        }
+        return table;
+    }
+
     // ------------------------------------------------------------------ 设置界面
 
     protected override void OnGUI() {
@@ -411,6 +497,11 @@ public class Main : JAMod {
         GUILayout.Label("<color=grey>总开关。关闭后各模组恢复原始语言（通过重新加载本地化即时生效）。</color>");
 
         GUILayout.Space(6);
+        gui.AddSettingToggle(ref settings.AlwaysChinese, "始终使用中文（不判断界面语言）", ReloadAll);
+        GUILayout.Label("<color=grey>默认开启：装本模组就是为了要中文，因此不再要求把游戏界面语言切成简体中文。"
+                        + "关闭后仅在语言为简体中文时生效。</color>");
+
+        GUILayout.Space(6);
         GUILayout.Label("<b>各模组汉化开关</b>");
         foreach((string id, _) in TranslatableMods) {
             if(JAMod.GetMods(id) == null) {
@@ -420,6 +511,27 @@ public class Main : JAMod {
             if(id == "JALib") gui.AddSettingToggle(ref settings.EnableJALib, "  " + id, ReloadAll);
             else if(id == "BetterCalibration") gui.AddSettingToggle(ref settings.EnableBetterCalibration, "  " + id, ReloadAll);
             else if(id == "JipperResourcePack") gui.AddSettingToggle(ref settings.EnableJipperResourcePack, "  " + id, ReloadAll);
+        }
+
+        GUILayout.Space(6);
+        GUILayout.Label("<b>保留原文的词</b>");
+        GUILayout.Label("<color=grey>不想被翻译的词，用逗号或空格分隔（不区分大小写，按条目名匹配，包含即命中）。"
+                        + "例：combo, best, attempt</color>");
+        string keep = settings.KeepOriginal ?? "";
+        string edited = GUILayout.TextField(keep, GUILayout.ExpandWidth(true));
+        if(edited != keep) {
+            settings.KeepOriginal = edited;
+            SaveSetting();
+            ReloadAll();
+        }
+        string[] terms = KeepTerms();
+        if(terms.Length > 0) {
+            GUILayout.Label("<color=grey>  当前生效 " + terms.Length + " 个词：" + string.Join("、", terms) + "</color>");
+            foreach((string id, _) in TranslatableMods) {
+                if(JAMod.GetMods(id) == null) continue;
+                if(KeepOriginalCount(id, terms, out int hit, out int noBase))
+                    GUILayout.Label("  " + id + "：命中 " + hit + " 条" + (noBase > 0 ? "（其中 " + noBase + " 条没有原文，仍显示中文）" : ""));
+            }
         }
 
         GUILayout.Space(6);
@@ -443,9 +555,13 @@ public class Main : JAMod {
 /// </summary>
 internal class ModSettings : JASetting {
     public bool Enabled = true;
+    /// <summary>不判断界面语言，一律使用中文（装本模组的人就是要中文）。</summary>
+    public bool AlwaysChinese = true;
     public bool EnableJALib = true;
     public bool EnableBetterCalibration = true;
     public bool EnableJipperResourcePack = true;
+    /// <summary>希望保留英文原文的词（逗号/换行分隔，匹配键名，不区分大小写）。</summary>
+    public string KeepOriginal = "";
 
     internal ModSettings(JAMod mod, Newtonsoft.Json.Linq.JObject jsonObject = null) : base(mod, jsonObject) {
     }
@@ -484,21 +600,25 @@ internal static class ModLocalizationPatch {
             if(Array.FindIndex(Main.TranslatableMods, entry => entry.Id == mod.Name) < 0) return true;
             if(!main.IsModEnabled(mod.Name)) return true; // 该模组被单独关闭
 
-            // 本轮生效语言：模组自定语言 > 已缓存的当前语言 > 游戏语言
-            SystemLanguage? curLang = (SystemLanguage?) LangField?.GetValue(__instance);
-            SystemLanguage? custom = (SystemLanguage?) CustomLanguageProperty?.GetValue(mod);
-            SystemLanguage language = custom ?? curLang ?? GameLanguage();
-
-            // 只在简体中文下接管；其它语言交回原逻辑，不影响玩家的语言设置。
-            if(language != SystemLanguage.ChineseSimplified) return true;
-            // 已经是中文：既不再重复注入，也不再拉云端（这一步就是"汉化不被写回覆盖"的关键）
-            if(curLang == SystemLanguage.ChineseSimplified) return false;
+            // 默认不判断界面语言：装本模组的人就是要中文。
+            // 若用户关掉「始终使用中文」，则回退到原逻辑（按其语言设置决定）。
+            bool alwaysChinese = main.ModSetting?.AlwaysChinese ?? true;
+            if(!alwaysChinese) {
+                SystemLanguage? lang = (SystemLanguage?) LangField?.GetValue(__instance);
+                SystemLanguage? custom = (SystemLanguage?) CustomLanguageProperty?.GetValue(mod);
+                SystemLanguage language = custom ?? lang ?? GameLanguage();
+                if(language != SystemLanguage.ChineseSimplified) return true;
+                if(lang == SystemLanguage.ChineseSimplified) return false;
+            }
 
             if(!main.TryReadBuiltIn(mod.Name, out string json)) return true;
 
             // 先落盘再注入，保证磁盘与内存一致
             main.EnsureChineseFile(mod, json);
-            if(!Main.ApplyLocalization(__instance, Main.ParseTable(json))) {
+            // 按「保留原文」规则把命中的键换回英文，再注入
+            Dictionary<string, string> table = Main.ApplyKeepOriginal(
+                mod.Name, Main.ParseTable(json), main.KeepTerms());
+            if(!Main.ApplyLocalization(__instance, table)) {
                 // 注入失败就交回原流程，宁可走官方云端逻辑也不要卡在空表上
                 main.Warning("注入 " + mod.Name + " 的中文表失败（已交回官方逻辑）");
                 return true;
