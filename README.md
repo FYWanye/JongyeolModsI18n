@@ -16,7 +16,7 @@
 
 ## 安装
 
-1. 下载最新 Release 的 `JongyeolModsI18n.zip`
+1. 下载 **[JongyeolModsI18n.zip](https://github.com/FYWanye/JongyeolModsI18n/releases/latest/download/JongyeolModsI18n.zip)**
 2. **完全退出游戏**
 3. 把 zip 拖进 UMM 的「安装模组」窗口
    （或解压后把里面的文件放到 `<游戏>\Mods\JongyeolModsI18n\`）
@@ -164,8 +164,11 @@ JongyeolModsI18n\
 ├─ JAMod.Bootstrap.dll       引导 DLL（与作者的 JAMod.Bootstrap 一致）
 ├─ JongyeolModsI18n.csproj   工程文件
 ├─ Main.cs                   模组主体：Harmony Prefix + 设置面板
-├─ Resources\                内嵌中文表
-├─ build.ps1                 构建脚本
+├─ Resources\                内嵌中文表（<模组Id>.ChineseSimplified.json）
+├─ build.ps1                 构建脚本（编译 + 组装 + zip + 自检）
+├─ publish.ps1               发布脚本（推送 GitHub / 发 Release）
 ├─ Directory.Build.props     编译配置（GameManagedPath）
+├─ .gitattributes / .gitignore
+├─ LICENSE                   BSD 3-Clause
 └─ out\                      构建产物（git 忽略）
 ```

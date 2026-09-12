@@ -84,7 +84,7 @@ $zip = Join-Path $workspace 'out\JongyeolModsI18n.zip'
 if (-not (Test-Path $zip)) { throw "找不到产物：$zip" }
 
 if (-not $Tag) {
-    $Tag = 'v1.0.0.0'
+    $Tag = 'v1.0.0'
 }
 Write-Host "`n=== 创建 Release $Tag ===" -ForegroundColor Cyan
 gh release create $Tag $zip --title $Tag --notes "简体中文汉化独立模组（JALib / JipperResourcePack / BetterCalibration）。安装：把 JongyeolModsI18n.zip 拖进 UMM。"
