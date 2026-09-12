@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 跨平台编译 Rust 汉化编辑器（i18n-editor），跑单元测试，并上传可执行产物。
+  editor:
+    name: 编辑器 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 编译
+        run: cargo build --release
+      - name: 单元测试
+        run: cargo test --release
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: i18n-editor-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            target/release/i18n-editor
+            target/release/i18n-editor.exe
+
+  # 校验 data/ 汉化表：JSON 合法、键值均为字符串、data 与 Resources 保持一致。
+  data:
+    name: 校验汉化数据
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 JSON 与 data/Resources 同步
+        run: python3 .github/scripts/validate_data.py
