@@ -132,6 +132,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
   本项目仅提供简体中文译文与注入实现，沿用上游的 **BSD 3-Clause** 许可（见 [LICENSE](LICENSE)）。
 - 感谢 [UnityModManager](https://www.nexusmods.com/site/mods/21) 与 [Harmony](https://github.com/pardeike/Harmony)。
 
+## 发布到 GitHub
+
+本仓库已初始化 git（分支 `main`）。上传步骤：
+
+1. 到 <https://github.com/new> 新建**空仓库** `JongyeolModsI18n`
+   （**不要**勾选 Add README / .gitignore / LICENSE，否则会产生冲突）
+2. 在仓库目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\publish.ps1 -User <你的GitHub用户名>
+```
+
+脚本会：校验工作区干净 → 设置 `origin` → 确保分支为 `main` → `git push -u origin main`。
+
+发 Release（自动构建并把 zip 作为附件）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\publish.ps1 -User <用户名> -Release -Tag v1.0.0.0
+```
+
+> 发 Release 需要本机安装 [gh CLI](https://cli.github.com/)（`winget install --id GitHub.cli`）。
+> 没有也可以手动：跑 `build.ps1`，再到 GitHub 网页新建 Release 并上传 `out\JongyeolModsI18n.zip`。
+
 ## 仓库结构
 
 ```
